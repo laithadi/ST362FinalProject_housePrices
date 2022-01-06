@@ -1,0 +1,500 @@
+---
+title: "ST362 Project - King County House Prices"
+author: "Laith Adi - adix5190@mylaurier.ca"
+date: "29/11/2021"
+output: html_document
+---
+
+```{r}
+# libraries 
+library(tidyverse)
+library(Hmisc)
+if(!require("ISLR")) {install.packages("ISLR")}
+if(!require("leaps")) {install.packages("leaps")}
+if(!require("lmtest")){install.packages("lmtest")}
+if(!require("corrgram")) {install.packages("corrgram")}
+if(!require("interactions")) {install.packages("interactions")}
+library(ISLR)
+library(leaps)
+library(lmtest)
+library(corrgram)
+library(car)
+options(scipen = 100)
+library(interactions)
+```
+
+FUNCTIONS 
+
+```{r}
+#### Partial residual plots ####
+ls.part.res.plot <- function(x,y,j,intercept=TRUE,x.name=NULL,y.name="Y",main=NULL)
+  
+  # Produces a partial-residual plot for variable j in x. 
+  # x - X matrix for current model (no column of 1's should be included for
+  #     for an intercept term);
+  # y - Y vector;
+  # j - a column number of x;
+  # intercept - set to FALSE for a no-intercept model;
+  # x.name - x-axis label - if not supplied, then the name of column
+  #          j in x will be used;
+  # y.name - y-axis label;
+  # main - main title for plot, if not supplied then the title is of the form
+#        "Partial-residual plot for x".
+
+{ # Get residuals. 
+  reg <- lsfit(x,y,intercept=intercept)
+  res <- reg$residuals
+  
+  
+  # add a component from x_j
+  # if there is an intercept, we want coefficient j+1
+  
+  jj <- j
+  if(intercept == TRUE)
+    jj <- j+1
+  res <- res+reg$coef[jj]*x[,j]
+  
+  # set up labels. 
+  
+  if(mode(x.name) == "NULL")
+    x.name <- dimnames(x)[[2]][j]
+  if(mode(main) == "NULL")
+    main <- paste("Partial-residual plot for", x.name)
+  
+  
+  plot(x[,j], res, main=main, xlab=x.name,
+       ylab=paste("Partial residuals for",y.name))
+  lines(lowess(x[,j],res))
+}
+
+##### Added-variable plot #####
+
+ls.added.var.plot <- function(x,y,added.var,intercept=TRUE,
+                              x.name="X",y.name="Y",main="")
+  # Produces an added-variable plot.
+  # x - X matrix for current model (no column of 1's should be included for
+  #     for an intercept term);
+  # y - Y vector;
+  # added.var - if a scalar, a column number of x;
+  #              if a vector of length > 1, values for a "new" x variable.
+  # intercept - set to FALSE for a no-intercept model;
+  # x.name - x-axis label - if added.var is a scalar, the default "x" is 
+  #           replaced by the name of column added.var;
+  # y.name - y-axis label;
+  # main - main title for plot, if not supplied then the title is of the form
+#        "Added-variable plot for x".
+{
+  if(length(added.var)==1)
+  { 
+    # added.var is a column number for a variable in x.
+    if(x.name =="X")
+      x.name <- dimnames(x)[[2]][added.var]
+    xtilde <- x[,-added.var]
+    s.res <- lsfit(xtilde,y,intercept=intercept)$residuals
+    t.res <- lsfit(xtilde,x[,added.var],intercept=intercept)$residuals
+  }
+  else
+  {
+    # added.var is a "new" x variable not in x.
+    s.res <- lsfit(x,y,intercept=intercept)$residuals
+    t.res <- lsfit(x,added.var,intercept=intercept)$residuals
+  }
+  
+  if(main =="")
+    main <- paste("Added-variable plot for", x.name)
+  
+  plot(t.res,s.res,main=main,xlab=paste("Corrected",x.name),
+       ylab=paste("Corrected",y.name))
+  lines(lowess(t.res,s.res))
+}
+
+### Modified Box-Cox transformation ###
+box.cox <- function(x,y,intercept=TRUE, ylim=NULL, 
+                   lambda =seq (-2, 2, len=42), transform.x=FALSE,verbose =TRUE, make.plot=TRUE)
+# Applies Box-Cox transformation to y with parameter values lambda,
+# prints the fitted regressions, makes a plot of the log likelihood versus lambda, and returns a
+# vector containing the log likelihood values, normalized for the transformation, for each lambda.
+# x - X matrix for current model (no column of 1's should be included for an intercept term);
+# y - Y vector. 
+# intercept - Set to FALSE for a no-intercept model.
+# ylim - The range of log-likelihood values on the y-axis (if NULL, then use range(y)).
+#        Useful if you want to use the same scale for two plots. 
+# lambda - Y is raised to the power lambda. For log(Y) set lambda=0.
+# transform.x - Apply the same transformation to all elements of x?
+# verbose - Print fitted regression for each lambda?
+# make.plot - Make the plot?
+
+{  # Use only cases where y > 0 - otherwise geometric mean undefined. 
+     good.cases <- (y>0)
+     y <- y[good.cases]
+     x <- as.matrix(x)
+     x <- x[good.cases, , drop=F]
+     
+
+     # Geometric mean of y.
+     g <- exp(mean(log(y)))
+  
+     if(transform.x)
+     { 
+
+        # An x column will only be transformed if all values 
+        # are positive. 
+        x.pos <- vector(mode= "logical", length=ncol(x))
+        for(j in 1:ncol(x))
+           x.pos[j] <- (min(x[j]) > 0)
+           x.name <- dimnames(x)[[2]]
+         if( mode(x.name)=="NULL")
+           x.name <- paste("X",1:ncol(x),sep="")
+     } 
+
+   log.lik <- vector(mode ="numeric",length=length(lambda))
+
+   for(i in 1:length(lambda))
+  {     
+     if(lambda[i] !=0)
+      {  
+         # Don't apply constants. In particular, subtracting
+         # 1.0 would introduce intercept in no-intercept model.
+         # Normalization applied to SS(Res) later.
+         z <- y^lambda[i]
+         if (transform.x)
+       {  
+          x.new <- x 
+          x.new.name <- x.name
+           for(j in 1:ncol(x))
+              if(x.pos[j])
+              { 
+                 x.new[,j] <- x[,j]^lambda[i] 
+                 x.new.name[j] <- paste(x.name[j],"^",lambda[i], sep="")
+          }
+
+    }
+
+ }
+
+  else
+  { 
+          z<- log(y)
+          if(transform.x)
+           { 
+             x.new <- x 
+             x.new.name <- x.name
+              for(j in 1:ncol(x))
+                  if(x.pos[j])
+                 { 
+                     x.new[,j] <- log(x[,j])
+                     x.new.name[j] <- paste("log(",x.name[j],")",sep="")
+                }
+           }
+
+      }
+
+  if(transform.x)
+  {
+       dimnames(x.new) <- list(NULL,x.new.name)
+       reg <- lsfit(x.new,z,intercept=intercept) 
+   }
+  else 
+       reg <- lsfit(x,z,intercept = intercept)
+ 
+  if(verbose)
+ { cat("Lambda:",lambda[i], "\n")
+   ls.print(reg)
+ }
+
+ res <- reg$residuals
+ ss.res <- sum(res^2)/g^(2.0*(lambda[i] - 1.0 ))
+ if (lambda[i] !=0.0)
+  ss.res <- ss.res/lambda[i]^2
+ log.lik[i] <- -length(y)/2.0*log(ss.res)
+ }
+
+if(make.plot)
+{ 
+ if(mode(ylim)=="NULL")
+   ylim <- range(log.lik)
+   plot(lambda,log.lik,ylim=ylim, ylab="Log Likelihood", type="b", lty=1)
+   abline(max(log.lik)-3.8416/2,0,lty=2)
+ }
+return(log.lik)
+}
+```
+
+
+IMPORTING THE DATA
+
+```{r}
+csv = "kc_house_data.csv"
+KCHousePricesData = read.csv(csv)
+
+# remove the id row cause its irrelevant 
+KCHousePricesData <- subset(KCHousePricesData, select = -c(id))
+# looking at the data 
+KCHousePricesData 
+```
+
+UNDERSTANDING THE DATA A BIT MORE ...
+- Data types 
+- empty values ??? 
+
+```{r}
+# help us see the data type of the values for each column 
+str(KCHousePricesData)
+```
+
+```{r}
+# helps us see if there are any invalid values like NULL or EMPTY, etc. 
+numOfCol <- length(KCHousePricesData)
+
+for (i in 2:numOfCol) {
+  # for each column, print the unique values that it consists of 
+  print(unique(KCHousePricesData[i]))
+}
+```
+
+```{r}
+# counting missing values (assuming missing values are of type NA)for each column 
+sapply(KCHousePricesData, function(x) sum(is.na(x)))
+```
+
+
+
+we see that all but one ('date' column) are of data types int or num. The 'date' column is of type chr and for training models we prefer a better data type than a chr (or str). In r we can convert date to Date values using as.Date(df[date], "format"). First I am going to remove the ending of each value in the 'date' column since its just "T000000", which I find irrelevant, and wont convert as nicely to a Date Value. 
+
+Also, we see that none of the values are missing. I manually checked each possible value for every column to make sure myself. And used the sapply() and is.na() functions to count missing values (assuming missing values are of type NA) to be safe. So, we dont have to handle any missing cases. 
+
+TAKING CARE OF THE CHR DATA TYPE FOR THE 'DATE' COLUMN
+
+```{r}
+# first removing the "T000000" at the end of each value in the column 
+KCHousePricesData$date <- gsub("T000000", "", KCHousePricesData$date)
+
+# convert data type to Date 
+KCHousePricesData$date <- as.Date(KCHousePricesData$date, "%Y%m%d")
+
+head(KCHousePricesData)
+```
+
+lets double check by using the str() and head() functions to see that the 'date' column does not include the "T000000" anymore and is a Date data type. 
+
+```{r}
+head(KCHousePricesData)
+str(KCHousePricesData)
+```
+
+OBSERVING (BASIC) STATISTICS FOR EACH COLUMN
+
+```{r}
+summary(KCHousePricesData)
+```
+
+```{r}
+hist.data.frame(KCHousePricesData)
+```
+
+
+```{r}
+KCHousePricesData.subsets = regsubsets(price~.,data = KCHousePricesData,  method = "backward", nvmax = 19)
+KCHousePricesData.subsets.summary = summary(KCHousePricesData.subsets)
+
+KCHousePricesData.subsets.summary
+
+?plot.regsubsets
+
+names(KCHousePricesData.subsets.summary)
+
+
+KCHousePricesData.subsets.summary$cp
+
+
+data.frame(
+  Adj.R2 = which.max(KCHousePricesData.subsets.summary$adjr2),
+  CP = which.min(KCHousePricesData.subsets.summary$cp),
+  BIC = which.min(KCHousePricesData.subsets.summary$bic)
+)
+
+plot(KCHousePricesData.subsets, scale = "Cp")
+```
+
+```{r}
+KCHousePricesData.subsets = regsubsets(price~.,data = KCHousePricesData,  method = "forward", nvmax = 19)
+KCHousePricesData.subsets.summary = summary(KCHousePricesData.subsets)
+
+KCHousePricesData.subsets.summary
+
+?plot.regsubsets
+
+names(KCHousePricesData.subsets.summary)
+
+
+KCHousePricesData.subsets.summary$cp
+
+KCHousePricesData.subsets.summary$bic
+data.frame(
+  Adj.R2 = which.max(KCHousePricesData.subsets.summary$adjr2),
+  CP = which.min(KCHousePricesData.subsets.summary$cp),
+  BIC = which.min(KCHousePricesData.subsets.summary$bic)
+)
+
+plot(KCHousePricesData.subsets, scale = "Cp")
+```
+
+
+
+CORRELATION BETWEEN ALL VARIABLES 
+
+```{r}
+corrgram(KCHousePricesData, order=TRUE, upper.panel=panel.cor)
+```
+
+
+MODEL BUILDING AND SUMMARY 
+
+```{r}
+final.model <- lm(price~.-sqft_living-sqft_above+sqft_above*sqft_living, data = KCHousePricesData)
+summary(final.model)
+anova(final.model)
+```
+
+```{r}
+final.model <- lm(price~.-sqft_living-sqft_above+sqft_above*sqft_living, data = KCHousePricesData)
+summary(final.model)
+anova(final.model)
+```
+
+
+INTERACTION TERM 
+
+```{r}
+inter.term.lm <- lm(price ~ sqft_above*sqft_living, data = KCHousePricesData)
+summary(inter.term.lm)
+anova(inter.term.lm)
+# interaction plot 
+interact_plot(inter.term.lm, pred = sqft_above, modx= sqft_living)
+```
+
+
+
+
+RESIDUAL ANALYSIS 
+
+```{r}
+plot(final.model)
+#plot(model)
+```
+
+We see that the QQ plot isnt really linear. positively and negatively skewed, more positively though. (DATA NOT NORMAL). For the residual vs. fitted graph, its very clear that the data is fanning out, not random.  
+
+```{r}
+bptest(final.model)
+durbinWatsonTest(final.model)
+```
+
+OUTLIERS, LEVERAGE, INFLUENTIAL POINTS 
+
+```{r}
+fm.lev <-hatvalues(final.model)[hatvalues(final.model)>2*(length(coef(final.model))/length(hatvalues(final.model)))]
+fm.out <-rstandard(final.model)[abs(rstandard(final.model)) > 2]
+fm.inf <-cooks.distance(final.model)[cooks.distance(final.model) >4/length(cooks.distance(final.model))]
+fm.lev2 <-as.integer(names(fm.lev))
+fm.out2<-as.integer(names(fm.out))
+fm.inf2<-as.integer(names(fm.inf))
+fm.inters <- intersect(intersect(fm.inf2,fm.lev2), fm.out2)
+```
+
+```{r}
+KCHousePricesData.fmnew <- KCHousePricesData[-fm.inters,]
+final.model.v1 <- lm(price~.-sqft_living-sqft_above+sqft_above*sqft_living, data = KCHousePricesData.fmnew)
+summary(final.model.v1)
+anova(final.model.v1)
+```
+
+
+
+```{r}
+final.mode.transformed <- lm(log(price)~.+log(sqft_living)-sqft_above-yr_built-sqft_basement, data = KCHousePricesData.fmnew)
+summary(final.mode.transformed)
+anova(final.mode.transformed)
+```
+```{r}
+modelll<-lm(log(price)~log(sqft_living)+view+lat+grade,data=KCHousePricesData.fmnew)
+anova(modelll,final.mode.transformed)
+```
+
+
+PLOTS - RESIDUAL ANALYSIS 
+
+```{r}
+plot(final.mode.transformed)
+```
+
+
+
+BOX-COX TRANSFORMATION 
+
+```{r}
+ex <- KCHousePricesData[,!(colnames(KCHousePricesData) %in% c("price", "date"))]
+eY = KCHousePricesData$price
+
+result=box.cox(ex,eY) 
+lambda_seq = seq (-2, 2,len=42) 
+optimal_lambda = lambda_seq[which.max(result)]
+optimal_lambda
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
